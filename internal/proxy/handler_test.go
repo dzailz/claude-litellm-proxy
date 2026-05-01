@@ -163,7 +163,7 @@ func TestHandler_RedactedThinkingRemoved(t *testing.T) {
 	assert.True(t, foundText)
 }
 
-func TestHandler_ReasoningContentKeptWithToolCalls(t *testing.T) {
+func TestHandler_ReasoningContentAlwaysStripped(t *testing.T) {
 	var upstreamBody []byte
 
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -196,7 +196,7 @@ func TestHandler_ReasoningContentKeptWithToolCalls(t *testing.T) {
 	var sent map[string]any
 	json.Unmarshal(upstreamBody, &sent)
 	messages := sent["messages"].([]any)
-	assert.Contains(t, messages[0].(map[string]any), "reasoning_content")
+	assert.NotContains(t, messages[0].(map[string]any), "reasoning_content")
 }
 
 func TestHandler_ReasoningContentStrippedWithoutTools(t *testing.T) {

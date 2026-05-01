@@ -71,10 +71,8 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			messages, removedBlocks = RemoveRedactedThinking(messages)
 			body["messages"] = messages
 
+			reasoningStripped = StripReasoningContent(messages)
 			hasToolCalls = ShouldKeepReasoningContent(messages)
-			if !hasToolCalls {
-				reasoningStripped = StripReasoningContent(messages)
-			}
 		}
 	}
 
