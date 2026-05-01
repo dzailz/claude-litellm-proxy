@@ -57,6 +57,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	removedBlocks := 0
 	hasToolCalls := false
 	reasoningStripped := 0
+	thinkingNoSig := 0
 
 	messagesRaw, exists := body["messages"]
 	if exists {
@@ -71,6 +72,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			messages, removedBlocks = RemoveRedactedThinking(messages)
 			body["messages"] = messages
 
+			thinkingNoSig = CountThinkingWithoutSignature(messages)
 			reasoningStripped = StripReasoningContent(messages)
 			hasToolCalls = ShouldKeepReasoningContent(messages)
 		}
@@ -90,6 +92,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"removed_blocks", removedBlocks,
 		"has_tool_calls", hasToolCalls,
 		"reasoning_stripped", reasoningStripped,
+		"thinking_no_signature", thinkingNoSig,
 		"upstream_url", upstreamURL,
 		"model", body["model"],
 	)
@@ -169,7 +172,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			)
 		}
 
-		h.logRequest(reqID, r, resp.StatusCode, start, removedBlocks, hasToolCalls, upstreamURL)
+		h.logRequest(reqID, r, resp.StatusCode, start, removedBlocks, hasToolCalls, thinkingNoSig, upstreamURL)
 		return
 	}
 
@@ -192,10 +195,10 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	h.logRequest(reqID, r, resp.StatusCode, start, removedBlocks, hasToolCalls, upstreamURL)
+	h.logRequest(reqID, r, resp.StatusCode, start, removedBlocks, hasToolCalls, thinkingNoSig, upstreamURL)
 }
 
-func (h *ProxyHandler) logRequest(reqID string, r *http.Request, status int, start time.Time, removedBlocks int, hasToolCalls bool, upstreamURL string) {
+func (h *ProxyHandler) logRequest(reqID string, r *http.Request, status int, start time.Time, removedBlocks int, hasToolCalls bool, thinkingNoSig int, upstreamURL string) {
 	h.Logger.Info("request completed",
 		"request_id", reqID,
 		"method", r.Method,
@@ -204,6 +207,7 @@ func (h *ProxyHandler) logRequest(reqID string, r *http.Request, status int, sta
 		"status_code", status,
 		"duration", time.Since(start).String(),
 		"thinking_blocks_removed", removedBlocks,
+		"thinking_no_signature", thinkingNoSig,
 		"has_tool_calls", hasToolCalls,
 		"api_key_preview", maskAPIKey(h.APIKey),
 	)

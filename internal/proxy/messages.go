@@ -1,5 +1,26 @@
 package proxy
 
+var unsupportedContentTypes = map[string]bool{
+	"redacted_thinking":           true,
+	"server_tool_use":             true,
+	"web_search_tool_result":      true,
+	"code_execution_tool_result":  true,
+	"mcp_tool_use":                true,
+	"mcp_tool_result":             true,
+	"container_upload":            true,
+	"image":                       true,
+	"document":                    true,
+	"search_result":               true,
+}
+
+func isUnsupportedContentType(t any) bool {
+	s, ok := t.(string)
+	if !ok {
+		return false
+	}
+	return unsupportedContentTypes[s]
+}
+
 func RemoveRedactedThinking(messages []map[string]any) ([]map[string]any, int) {
 	if len(messages) == 0 {
 		return messages, 0
@@ -45,7 +66,7 @@ func RemoveRedactedThinking(messages []map[string]any) ([]map[string]any, int) {
 				filtered = append(filtered, block)
 				continue
 			}
-			if blk["type"] == "redacted_thinking" {
+			if isUnsupportedContentType(blk["type"]) {
 				removed++
 				continue
 			}
@@ -132,4 +153,30 @@ func copyMessage(m map[string]any) map[string]any {
 		cp[k] = v
 	}
 	return cp
+}
+
+func CountThinkingWithoutSignature(messages []map[string]any) int {
+	count := 0
+	for _, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		contentArr, ok := msg["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, block := range contentArr {
+			blk, ok := block.(map[string]any)
+			if !ok {
+				continue
+			}
+			if blk["type"] != "thinking" {
+				continue
+			}
+			if _, ok := blk["signature"]; !ok {
+				count++
+			}
+		}
+	}
+	return count
 }

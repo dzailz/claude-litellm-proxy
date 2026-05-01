@@ -325,3 +325,81 @@ func TestShouldKeepReasoningContent_ContentIsNumber(t *testing.T) {
 	}
 	assert.False(t, ShouldKeepReasoningContent(messages))
 }
+
+func TestIsUnsupportedContentType(t *testing.T) {
+	assert.True(t, isUnsupportedContentType("redacted_thinking"))
+	assert.True(t, isUnsupportedContentType("server_tool_use"))
+	assert.True(t, isUnsupportedContentType("web_search_tool_result"))
+	assert.True(t, isUnsupportedContentType("code_execution_tool_result"))
+	assert.True(t, isUnsupportedContentType("mcp_tool_use"))
+	assert.True(t, isUnsupportedContentType("mcp_tool_result"))
+	assert.True(t, isUnsupportedContentType("container_upload"))
+	assert.True(t, isUnsupportedContentType("image"))
+	assert.True(t, isUnsupportedContentType("document"))
+	assert.True(t, isUnsupportedContentType("search_result"))
+	assert.False(t, isUnsupportedContentType("text"))
+	assert.False(t, isUnsupportedContentType("thinking"))
+	assert.False(t, isUnsupportedContentType("tool_use"))
+	assert.False(t, isUnsupportedContentType("tool_result"))
+	assert.False(t, isUnsupportedContentType(42))
+	assert.False(t, isUnsupportedContentType(nil))
+}
+
+func TestCountThinkingWithoutSignature_NoThinking(t *testing.T) {
+	messages := []map[string]any{
+		{"role": "assistant", "content": []any{
+			map[string]any{"type": "text", "text": "hello"},
+		}},
+	}
+	assert.Equal(t, 0, CountThinkingWithoutSignature(messages))
+}
+
+func TestCountThinkingWithoutSignature_WithSignature(t *testing.T) {
+	messages := []map[string]any{
+		{"role": "assistant", "content": []any{
+			map[string]any{"type": "thinking", "thinking": "hmm", "signature": "sig123"},
+		}},
+	}
+	assert.Equal(t, 0, CountThinkingWithoutSignature(messages))
+}
+
+func TestCountThinkingWithoutSignature_MissingSignature(t *testing.T) {
+	messages := []map[string]any{
+		{"role": "assistant", "content": []any{
+			map[string]any{"type": "thinking", "thinking": "hmm"},
+		}},
+	}
+	assert.Equal(t, 1, CountThinkingWithoutSignature(messages))
+}
+
+func TestCountThinkingWithoutSignature_Mixed(t *testing.T) {
+	messages := []map[string]any{
+		{"role": "assistant", "content": []any{
+			map[string]any{"type": "thinking", "thinking": "a", "signature": "s1"},
+			map[string]any{"type": "thinking", "thinking": "b"},
+			map[string]any{"type": "text", "text": "hi"},
+			map[string]any{"type": "thinking", "thinking": "c", "signature": "s2"},
+		}},
+	}
+	assert.Equal(t, 1, CountThinkingWithoutSignature(messages))
+}
+
+func TestCountThinkingWithoutSignature_NilMessages(t *testing.T) {
+	assert.Equal(t, 0, CountThinkingWithoutSignature(nil))
+}
+
+func TestRemoveRedactedThinking_RemovesUnsupportedTypes(t *testing.T) {
+	messages := []map[string]any{
+		{"role": "assistant", "content": []any{
+			map[string]any{"type": "image", "source": "..."},
+			map[string]any{"type": "document", "source": "..."},
+			map[string]any{"type": "text", "text": "hi"},
+			map[string]any{"type": "server_tool_use", "id": "x"},
+		}},
+	}
+	result, count := RemoveRedactedThinking(messages)
+	assert.Equal(t, 3, count)
+	contentArr := result[0]["content"].([]any)
+	assert.Len(t, contentArr, 1)
+	assert.Equal(t, "text", contentArr[0].(map[string]any)["type"])
+}
