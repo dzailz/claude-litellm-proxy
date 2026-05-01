@@ -242,3 +242,86 @@ func TestStripReasoningContent_NilMessages(t *testing.T) {
 	count := StripReasoningContent(nil)
 	assert.Equal(t, 0, count)
 }
+
+func TestStripReasoningContent_NilMessageInArray(t *testing.T) {
+	messages := []map[string]any{
+		nil,
+		{"reasoning_content": "think", "content": "a"},
+	}
+	count := StripReasoningContent(messages)
+	assert.Equal(t, 1, count)
+}
+
+func TestRemoveRedactedThinking_NilMessageInArray(t *testing.T) {
+	messages := []map[string]any{nil}
+	result, count := RemoveRedactedThinking(messages)
+	assert.Equal(t, 0, count)
+	assert.Len(t, result, 1)
+	assert.Nil(t, result[0])
+}
+
+func TestRemoveRedactedThinking_NonMapBlockInContent(t *testing.T) {
+	messages := []map[string]any{
+		{"role": "assistant", "content": []any{
+			"not_a_map",
+			map[string]any{"type": "redacted_thinking", "data": "x"},
+			map[string]any{"type": "text", "text": "hi"},
+		}},
+	}
+	result, count := RemoveRedactedThinking(messages)
+	assert.Equal(t, 1, count)
+	contentArr := result[0]["content"].([]any)
+	assert.Len(t, contentArr, 2)
+}
+
+func TestShouldKeepReasoningContent_OtherToolCallsType(t *testing.T) {
+	messages := []map[string]any{
+		{"role": "assistant", "tool_calls": map[string]any{"id": "call"}},
+	}
+	assert.True(t, ShouldKeepReasoningContent(messages))
+}
+
+func TestShouldKeepReasoningContent_StringContent(t *testing.T) {
+	messages := []map[string]any{
+		{"role": "assistant", "content": "plain text response"},
+	}
+	assert.False(t, ShouldKeepReasoningContent(messages))
+}
+
+func TestShouldKeepReasoningContent_NilMessageInArray(t *testing.T) {
+	messages := []map[string]any{nil}
+	assert.False(t, ShouldKeepReasoningContent(messages))
+}
+
+func TestShouldKeepReasoningContent_NonMapBlockInContentArray(t *testing.T) {
+	messages := []map[string]any{
+		{"role": "assistant", "content": []any{
+			"not_a_map_string",
+			map[string]any{"type": "tool_use", "name": "func"},
+		}},
+	}
+	assert.True(t, ShouldKeepReasoningContent(messages))
+}
+
+func TestRemoveRedactedThinking_NoContentKey(t *testing.T) {
+	messages := []map[string]any{
+		{"role": "assistant"},
+	}
+	result, count := RemoveRedactedThinking(messages)
+	assert.Equal(t, 0, count)
+	assert.Len(t, result, 1)
+}
+
+func TestShouldKeepReasoningContent_NoContentKey(t *testing.T) {
+	messages := []map[string]any{
+		{"role": "assistant"},
+	}
+	assert.False(t, ShouldKeepReasoningContent(messages))
+}
+
+func TestShouldKeepReasoningContent_ContentIsNumber(t *testing.T) {
+	messages := []map[string]any{
+		{"role": "assistant", "content": float64(42)},
+	}
+	assert.False(t, ShouldKeepReasoningContent(messages))
+}

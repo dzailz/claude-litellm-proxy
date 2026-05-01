@@ -342,3 +342,89 @@ func TestHandler_UpstreamNon200_PropagatesStatus(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	assert.Contains(t, string(body), "rate limited")
 }
+
+func TestHandler_EmptyBody_Propagates(t *testing.T) {
+	var upstreamBody []byte
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{"id": "empty_ok"})
+	})
+
+	handler, upstreamServer := newTestHandler(upstream, "test-key")
+	defer upstreamServer.Close()
+
+	proxyServer := httptest.NewServer(handler)
+	defer proxyServer.Close()
+
+	resp, err := http.Post(proxyServer.URL+"/v1/messages", "application/json",
+		strings.NewReader(`{}`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var sent map[string]any
+	json.Unmarshal(upstreamBody, &sent)
+	assert.NotContains(t, sent, "messages")
+}
+
+func TestHandler_NonArrayMessages_Propagates(t *testing.T) {
+	var upstreamBody []byte
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{"id": "ok"})
+	})
+
+	handler, upstreamServer := newTestHandler(upstream, "test-key")
+	defer upstreamServer.Close()
+
+	proxyServer := httptest.NewServer(handler)
+	defer proxyServer.Close()
+
+	resp, err := http.Post(proxyServer.URL+"/v1/messages", "application/json",
+		strings.NewReader(`{"messages":"not_an_array"}`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var sent map[string]any
+	json.Unmarshal(upstreamBody, &sent)
+	assert.Equal(t, "not_an_array", sent["messages"])
+}
+
+func TestHandler_NonMapMessageElements_Propagates(t *testing.T) {
+	var upstreamBody []byte
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{"id": "ok"})
+	})
+
+	handler, upstreamServer := newTestHandler(upstream, "test-key")
+	defer upstreamServer.Close()
+
+	proxyServer := httptest.NewServer(handler)
+	defer proxyServer.Close()
+
+	body := `{"messages":["not_a_map",{"role":"assistant","content":[{"type":"redacted_thinking","data":"x"},{"type":"text","text":"hi"}]}]}`
+	resp, err := http.Post(proxyServer.URL+"/v1/messages", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var sent map[string]any
+	json.Unmarshal(upstreamBody, &sent)
+	messages := sent["messages"].([]any)
+	assert.Len(t, messages, 2)
+	msg := messages[1].(map[string]any)
+	contentArr := msg["content"].([]any)
+	assert.Len(t, contentArr, 1)
+	assert.Equal(t, "text", contentArr[0].(map[string]any)["type"])
+}
