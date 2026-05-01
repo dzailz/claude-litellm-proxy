@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -37,7 +38,14 @@ func main() {
 		UpstreamURL: "https://api.deepseek.com/anthropic",
 		APIKey:      apiKey,
 		HTTPClient: &http.Client{
-			Timeout: timeout,
+			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout: timeout,
+				}).DialContext,
+				TLSHandshakeTimeout:   timeout,
+				ResponseHeaderTimeout: timeout,
+				IdleConnTimeout:       90 * time.Second,
+			},
 		},
 		Logger: log,
 	}
@@ -60,7 +68,7 @@ func main() {
 		"listen_addr", listenAddr,
 		"log_level", logLevel,
 		"log_format", logFormat,
-		"client_timeout", timeout.String(),
+		"connect_timeout", timeout.String(),
 	)
 
 	if err := http.ListenAndServe(listenAddr, r); err != nil {

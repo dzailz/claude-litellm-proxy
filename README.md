@@ -55,7 +55,7 @@ Claude Code                Proxy (127.0.0.1:8082)          DeepSeek API
 | `DEEPSEEK_API_KEY_FILE` | — | Путь к файлу с ключом (приоритетнее) |
 | `LOG_LEVEL` | `info` | Уровень: `debug`, `info`, `warn`, `error` |
 | `LOG_FORMAT` | `json` | Формат логов: `json`, `text` |
-| `CLIENT_TIMEOUT` | `120s` | Таймаут запросов к DeepSeek API |
+| `CLIENT_TIMEOUT` | `120s` | Таймаут подключения к DeepSeek (dial, TLS, response headers). **Чтение тела ответа (stream) — без таймаута.** |
 
 ### Из исходников
 

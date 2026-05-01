@@ -137,7 +137,8 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		statusCode := http.StatusBadGateway
 		if strings.Contains(err.Error(), "timeout") ||
-			strings.Contains(err.Error(), "deadline exceeded") {
+			strings.Contains(err.Error(), "deadline exceeded") ||
+			strings.Contains(err.Error(), "Timeout") {
 			statusCode = http.StatusGatewayTimeout
 		}
 		h.logError(reqID, r, statusCode, start, "upstream request failed", err)
