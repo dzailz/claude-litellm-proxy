@@ -90,11 +90,14 @@ docker compose logs -f
 ### Конфигурация Claude Code
 
 ```bash
-export ANTHROPIC_BASE_URL="http://127.0.0.1:8082/v1/messages?beta=true"
+export ANTHROPIC_BASE_URL="http://127.0.0.1:8082"
 export ANTHROPIC_AUTH_TOKEN="anything"
 export ANTHROPIC_MODEL="deepseek-v4-pro"
 export CLAUDE_CODE_EFFORT_LEVEL="max"
 ```
+
+> **Важно:** `ANTHROPIC_BASE_URL` указывает только на хост и порт, **без пути**.
+> Anthropic SDK сам добавляет `/v1/messages?beta=true` к base_url.
 
 ## Эндпоинты
 

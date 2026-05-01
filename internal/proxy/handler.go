@@ -85,15 +85,35 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	upstreamURL := h.UpstreamURL + "/v1/messages"
+
 	h.Logger.Debug("request transformed",
 		"request_id", reqID,
 		"removed_blocks", removedBlocks,
 		"has_tool_calls", hasToolCalls,
 		"reasoning_stripped", reasoningStripped,
+		"upstream_url", upstreamURL,
+		"model", body["model"],
 	)
+	if exists {
+		if msgArr, ok := messagesRaw.([]any); ok {
+			h.Logger.Debug("message_count", "request_id", reqID, "count", len(msgArr))
+		}
+	}
+
+	if h.Logger.Enabled(r.Context(), slog.LevelDebug) {
+		bodyPreview := string(modifiedBody)
+		if len(bodyPreview) > 2048 {
+			bodyPreview = bodyPreview[:2048] + "...(truncated)"
+		}
+		h.Logger.Debug("modified request body",
+			"request_id", reqID,
+			"body", bodyPreview,
+		)
+	}
 
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
-		h.UpstreamURL+r.URL.RequestURI(), bytes.NewReader(modifiedBody))
+		upstreamURL, bytes.NewReader(modifiedBody))
 	if err != nil {
 		h.logError(reqID, r, 500, start, "failed to create upstream request", err)
 		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
@@ -150,7 +170,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			)
 		}
 
-		h.logRequest(reqID, r, resp.StatusCode, start, removedBlocks, hasToolCalls)
+		h.logRequest(reqID, r, resp.StatusCode, start, removedBlocks, hasToolCalls, upstreamURL)
 		return
 	}
 
@@ -160,16 +180,28 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
 
-	h.logRequest(reqID, r, resp.StatusCode, start, removedBlocks, hasToolCalls)
+	var respBody bytes.Buffer
+	io.Copy(io.MultiWriter(w, &respBody), resp.Body)
+
+	if resp.StatusCode >= 400 {
+		h.Logger.Warn("upstream error response",
+			"request_id", reqID,
+			"upstream_status", resp.StatusCode,
+			"upstream_body", strings.TrimSpace(respBody.String()),
+			"upstream_url", upstreamURL,
+		)
+	}
+
+	h.logRequest(reqID, r, resp.StatusCode, start, removedBlocks, hasToolCalls, upstreamURL)
 }
 
-func (h *ProxyHandler) logRequest(reqID string, r *http.Request, status int, start time.Time, removedBlocks int, hasToolCalls bool) {
+func (h *ProxyHandler) logRequest(reqID string, r *http.Request, status int, start time.Time, removedBlocks int, hasToolCalls bool, upstreamURL string) {
 	h.Logger.Info("request completed",
 		"request_id", reqID,
 		"method", r.Method,
 		"url", r.URL.String(),
+		"upstream_url", upstreamURL,
 		"status_code", status,
 		"duration", time.Since(start).String(),
 		"thinking_blocks_removed", removedBlocks,
