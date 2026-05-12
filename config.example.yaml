@@ -1,0 +1,45 @@
+# Claude Code → Proxy Configuration
+# Copy this file to config.yaml and customize for your deployment.
+#
+# The proxy searches for config.yaml via the CONFIG_FILE env var.
+# When no config file is available, zero-config defaults are used
+# (DeepSeek mode with standard settings for backward compatibility).
+#
+# Env var references (${VAR_NAME}) are interpolated at load time.
+# Direct environment variables override any YAML values at runtime,
+# giving runtime configuration the highest priority.
+
+# Backend selection: "deepseek" or "litellm"
+backend:
+  type: deepseek
+
+# HTTP server settings
+server:
+  listen_addr: "127.0.0.1:8082"
+  client_timeout: "120s"
+
+# Logging
+logging:
+  level: "info"      # debug, info, warn, error
+  format: "json"     # json, text
+
+# DeepSeek backend (used when backend.type = "deepseek")
+deepseek:
+  # API key — use env var reference for security
+  api_key: "${DEEPSEEK_API_KEY}"
+  # Alternative: path to file containing the API key (higher priority)
+  api_key_file: ""
+  # DeepSeek Anthropic-compatible API endpoint
+  base_url: "https://api.deepseek.com/anthropic"
+
+# LiteLLM backend (used when backend.type = "litellm")
+litellm:
+  # Your LiteLLM instance URL (self-hosted or cloud)
+  base_url: "http://localhost:4000"
+  # LiteLLM virtual key (leave empty for no-auth mode)
+  api_key: "${LITELLM_API_KEY}"
+  # Map Claude model names to LiteLLM model identifiers.
+  # Keys are Claude-side model names, values are LiteLLM model strings.
+  model_map:
+    "deepseek-v4-pro": "deepseek/deepseek-chat"
+    "claude-sonnet-4-20250514": "anthropic/claude-sonnet-4-20250514"

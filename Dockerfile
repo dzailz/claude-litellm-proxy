@@ -12,7 +12,18 @@ FROM alpine:3.20
 
 RUN apk --no-cache add ca-certificates wget
 
+WORKDIR /app
+
 COPY --from=builder /proxy /usr/local/bin/proxy
+
+# Copy example config for reference. Users should mount their own
+# config.yaml at runtime via docker-compose or a bind mount.
+COPY config.example.yaml /app/config.example.yaml
+
+# Path to the YAML config file. When set, the proxy loads settings
+# from this file (env vars still take precedence for overrides).
+# When empty (default), zero-config DeepSeek mode is used.
+ENV CONFIG_FILE=""
 
 EXPOSE 8082
 

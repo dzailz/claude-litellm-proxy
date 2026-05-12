@@ -7,11 +7,30 @@ services:
     ports:
       - "127.0.0.1:8082:8082"
     environment:
+      # Backend type: "deepseek" (default) or "litellm"
+      - BACKEND_TYPE=${BACKEND_TYPE:-deepseek}
+
+      # Server settings
       - LISTEN_ADDR=0.0.0.0:8082
-      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:?err}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - LOG_FORMAT=${LOG_FORMAT:-json}
       - CLIENT_TIMEOUT=${CLIENT_TIMEOUT:-120s}
+
+      # DeepSeek backend (required when BACKEND_TYPE=deepseek)
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - DEEPSEEK_API_KEY_FILE=${DEEPSEEK_API_KEY_FILE:-}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com/anthropic}
+
+      # LiteLLM backend (required when BACKEND_TYPE=litellm)
+      - LITELLM_API_KEY=${LITELLM_API_KEY:-}
+      - LITELLM_BASE_URL=${LITELLM_BASE_URL:-http://localhost:4000}
+
+      # Config file path (optional — use config.yaml for advanced settings)
+      - CONFIG_FILE=${CONFIG_FILE:-}
+    volumes:
+      # Mount a config.yaml for declarative configuration.
+      # Copy config.example.yaml to config.yaml and customize.
+      - ./config.yaml:/app/config.yaml:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8082/health || exit 1"]
       interval: 30s
@@ -23,3 +42,14 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+# Example .env for DeepSeek mode:
+#   DEEPSEEK_API_KEY=sk-your-key-here
+#
+# Example .env for LiteLLM mode:
+#   BACKEND_TYPE=litellm
+#   LITELLM_BASE_URL=http://litellm-host:4000
+#   LITELLM_API_KEY=sk-litellm-virtual-key
+#
+# Example .env with config file:
+#   CONFIG_FILE=/app/config.yaml

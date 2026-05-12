@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"claude-go-to-deepseek-proxy/internal/backend"
 	"claude-go-to-deepseek-proxy/internal/logger"
 
 	"github.com/stretchr/testify/assert"
@@ -18,10 +19,13 @@ import (
 func newTestHandler(upstream http.Handler, apiKey string) (*ProxyHandler, *httptest.Server) {
 	upstreamServer := httptest.NewServer(upstream)
 	h := &ProxyHandler{
-		UpstreamURL: upstreamServer.URL,
-		APIKey:      apiKey,
-		HTTPClient:  &http.Client{Timeout: 30 * time.Second},
-		Logger:      logger.Setup("debug", "json"),
+		Backend: &backend.DeepSeekBackend{
+			BaseURL: upstreamServer.URL,
+			APIKey:  apiKey,
+			Client:  &http.Client{Timeout: 30 * time.Second},
+		},
+		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+		Logger:     logger.Setup("debug", "json"),
 	}
 	return h, upstreamServer
 }
