@@ -118,20 +118,44 @@ The `${VAR_NAME}` syntax interpolates environment variables at load time. When n
 
 ## Быстрый старт
 
+### Setup Wizard (recommended)
+
+The interactive setup wizard generates `config.yaml` and `claude-proxy.sh` for you:
+
+```bash
+./setup.sh
+```
+
+The wizard will:
+1. Check for required dependencies (Go, Docker)
+2. Ask how to run the proxy (build locally or Docker Compose)
+3. Select backend (DeepSeek or LiteLLM) and configure it
+4. Set up model mapping (LiteLLM mode)
+5. Configure Claude Code wrapper settings
+6. Generate all config files and optionally build/start the proxy
+
+After setup, run Claude through the wrapper:
+
+```bash
+./claude-proxy.sh
+```
+
+### Manual Setup
+
 ### Переменные окружения
 
-| Переменная | По умолчанию | Описание |
-|---|---|---|
-| `LISTEN_ADDR` | `127.0.0.1:8082` | Адрес прослушивания |
-| `DEEPSEEK_API_KEY` | — | API-ключ DeepSeek |
-| `DEEPSEEK_API_KEY_FILE` | — | Путь к файлу с ключом (приоритетнее) |
-| `LOG_LEVEL` | `info` | Уровень: `debug`, `info`, `warn`, `error` |
-| `LOG_FORMAT` | `json` | Формат логов: `json`, `text` |
-| `CLIENT_TIMEOUT` | `120s` | Таймаут подключения (dial, TLS, response headers). **Чтение тела ответа (stream) — без таймаута.** |
-| `BACKEND_TYPE` | `deepseek` | Режим: `deepseek` или `litellm` |
-| `LITELLM_API_KEY` | — | Виртуальный ключ LiteLLM (опционально) |
-| `LITELLM_BASE_URL` | `http://localhost:4000` | URL LiteLLM-инстанса |
-| `CONFIG_FILE` | — | Путь к YAML-файлу конфигурации (`config.yaml`) |
+| Переменная              | По умолчанию            | Описание                                                                                           |
+|-------------------------|-------------------------|----------------------------------------------------------------------------------------------------|
+| `LISTEN_ADDR`           | `127.0.0.1:8082`        | Адрес прослушивания                                                                                |
+| `DEEPSEEK_API_KEY`      | —                       | API-ключ DeepSeek                                                                                  |
+| `DEEPSEEK_API_KEY_FILE` | —                       | Путь к файлу с ключом (приоритетнее)                                                               |
+| `LOG_LEVEL`             | `info`                  | Уровень: `debug`, `info`, `warn`, `error`                                                          |
+| `LOG_FORMAT`            | `json`                  | Формат логов: `json`, `text`                                                                       |
+| `CLIENT_TIMEOUT`        | `120s`                  | Таймаут подключения (dial, TLS, response headers). **Чтение тела ответа (stream) — без таймаута.** |
+| `BACKEND_TYPE`          | `deepseek`              | Режим: `deepseek` или `litellm`                                                                    |
+| `LITELLM_API_KEY`       | —                       | Виртуальный ключ LiteLLM (опционально)                                                             |
+| `LITELLM_BASE_URL`      | `http://localhost:4000` | URL LiteLLM-инстанса                                                                               |
+| `CONFIG_FILE`           | —                       | Путь к YAML-файлу конфигурации (`config.yaml`)                                                     |
 
 ### Из исходников
 
@@ -251,20 +275,20 @@ export ANTHROPIC_MODEL="deepseek-v4-pro"
 
 The `model_map` in the LiteLLM config translates Claude-side model names to LiteLLM model identifiers:
 
-| Claude Model (ANTHROPIC_MODEL) | LiteLLM Model Identifier |
-|---|---|
-| `deepseek-v4-pro` | `deepseek/deepseek-chat` |
-| `claude-sonnet-4-20250514` | `anthropic/claude-sonnet-4-20250514` |
+| Claude Model (ANTHROPIC_MODEL) | LiteLLM Model Identifier             |
+|--------------------------------|--------------------------------------|
+| `deepseek-v4-pro`              | `deepseek/deepseek-chat`             |
+| `claude-sonnet-4-20250514`     | `anthropic/claude-sonnet-4-20250514` |
 
 Unmapped models are passed through as-is.
 
 ## Эндпоинты
 
-| Метод | Путь | Описание |
-|---|---|---|
-| `POST` | `/v1/messages` | Проксирование Messages API |
-| `POST` | `/v1/messages?beta=true` | Аналогично (Claude Code передаёт `?beta=true`) |
-| `GET` | `/health` | Health check — возвращает `200 {"status":"ok"}` |
+| Метод  | Путь                     | Описание                                        |
+|--------|--------------------------|-------------------------------------------------|
+| `POST` | `/v1/messages`           | Проксирование Messages API                      |
+| `POST` | `/v1/messages?beta=true` | Аналогично (Claude Code передаёт `?beta=true`)  |
+| `GET`  | `/health`                | Health check — возвращает `200 {"status":"ok"}` |
 
 ## Логирование
 
@@ -311,6 +335,8 @@ claude-go-to-deepseek-proxy/
 │       └── logger.go            # slog setup
 ├── Dockerfile
 ├── docker-compose.yaml
+├── setup.sh                      # Interactive setup wizard
+├── claude-proxy.sh               # Generated wrapper (by setup.sh)
 └── README.md
 ```
 
