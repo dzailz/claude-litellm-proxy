@@ -78,9 +78,10 @@ To use a config file:
 # Copy the example and customize
 cp config.example.yaml config.yaml
 # Edit config.yaml with your settings
-export CONFIG_FILE=./config.yaml
 ./claude-go-to-deepseek-proxy
 ```
+
+The proxy auto-detects `config.yaml` in the working directory. If you need to specify a different path, use the `CONFIG_FILE` environment variable.
 
 ### config.yaml format
 
@@ -155,7 +156,7 @@ After setup, run Claude through the wrapper:
 | `BACKEND_TYPE`          | `deepseek`              | Режим: `deepseek` или `litellm`                                                                    |
 | `LITELLM_API_KEY`       | —                       | Виртуальный ключ LiteLLM (опционально)                                                             |
 | `LITELLM_BASE_URL`      | `http://localhost:4000` | URL LiteLLM-инстанса                                                                               |
-| `CONFIG_FILE`           | —                       | Путь к YAML-файлу конфигурации (`config.yaml`)                                                     |
+| `CONFIG_FILE`           | автообнаружение `config.yaml` | Путь к YAML-файлу конфигурации. Если не задан, прокси ищет `config.yaml` в рабочей директории. |
 
 ### Из исходников
 
@@ -168,7 +169,7 @@ export DEEPSEEK_API_KEY="sk-your-key-here"
 
 # Or with config file
 cp config.example.yaml config.yaml
-export CONFIG_FILE=./config.yaml
+# config.yaml is auto-detected in the working directory
 ./claude-go-to-deepseek-proxy
 ```
 
@@ -242,7 +243,7 @@ litellm:
 ```
 
 ```bash
-export CONFIG_FILE=./config.yaml
+# config.yaml is auto-detected in the working directory
 ./claude-go-to-deepseek-proxy
 ```
 

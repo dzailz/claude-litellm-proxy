@@ -3,13 +3,16 @@ package proxy
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"claude-go-to-deepseek-proxy/internal/backend"
+	"claude-go-to-deepseek-proxy/internal/compaction"
 	"claude-go-to-deepseek-proxy/internal/logger"
 
 	"github.com/stretchr/testify/assert"
@@ -431,4 +434,258 @@ func TestHandler_NonMapMessageElements_Propagates(t *testing.T) {
 	contentArr := msg["content"].([]any)
 	assert.Len(t, contentArr, 1)
 	assert.Equal(t, "text", contentArr[0].(map[string]any)["type"])
+}
+
+// --- Handler + Compaction Integration Tests ---
+
+// summarizerUpstream returns an HTTP handler that responds with valid Anthropic
+// Messages API format, used as the summarization backend in compaction tests.
+func summarizerUpstream(summaryText string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"id":   "msg_summary",
+			"type": "message",
+			"role":  "assistant",
+			"content": []any{
+				map[string]any{"type": "text", "text": summaryText},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(resp)
+	}
+}
+
+func TestHandler_CompactionFires_WhenOverTokenThreshold(t *testing.T) {
+	// The upstream receives two types of requests:
+	// 1. Summarization requests to /v1/messages (from the compactor)
+	// 2. The actual proxied request to /v1/messages (from the handler)
+	// We track the message count in the final proxied request.
+	var proxiedMessageCount int
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+
+		var req map[string]any
+		json.Unmarshal(body, &req)
+
+		// Check if this is a summarization request (has "system" field)
+		if _, isSummarization := req["system"]; isSummarization {
+			// Respond with a summary for the compactor
+			resp := map[string]any{
+				"id":   "msg_summary",
+				"type": "message",
+				"role":  "assistant",
+				"content": []any{
+					map[string]any{"type": "text", "text": "Summary of old conversation."},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		// This is the actual proxied request — record the message count
+		if messages, ok := req["messages"].([]any); ok {
+			proxiedMessageCount = len(messages)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":      "msg_final",
+			"type":    "message",
+			"role":    "assistant",
+			"content": []any{map[string]any{"type": "text", "text": "response"}},
+		})
+	})
+
+	handler, upstreamServer := newTestHandler(upstream, "test-api-key")
+	defer upstreamServer.Close()
+
+	// Wire in a compactor with a very low threshold to force compaction
+	handler.Compactor = &compaction.Compactor{
+		Enabled:      true,
+		MaxTokens:    1, // very low → always compacts if enough messages
+		MinMessages:  5,
+		SummaryModel: "haiku",
+		BaseURL:      upstreamServer.URL,
+		APIKey:       "test-api-key",
+		APIFormat:    "anthropic",
+		Client:       &http.Client{Timeout: 30 * time.Second},
+		Logger:       slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+
+	proxyServer := httptest.NewServer(handler)
+	defer proxyServer.Close()
+
+	// Build a request with 30 messages — enough to trigger compaction
+	messages := make([]map[string]any, 30)
+	for i := 0; i < 30; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		messages[i] = map[string]any{
+			"role":    role,
+			"content": "This is a message with enough content to contribute tokens. xxxxxxxxxxxxxxxxxxxx",
+		}
+	}
+
+	reqBody, _ := json.Marshal(map[string]any{
+		"model":    "deepseek-v4-pro",
+		"messages": messages,
+	})
+
+	resp, err := http.Post(proxyServer.URL+"/v1/messages", "application/json", strings.NewReader(string(reqBody)))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// The proxied request should have fewer messages than the original 30
+	// because compaction should have replaced old messages with a summary.
+	assert.Less(t, proxiedMessageCount, 30,
+		"compaction should reduce the number of messages sent upstream")
+	assert.Greater(t, proxiedMessageCount, 0,
+		"there should still be messages after compaction")
+}
+
+func TestHandler_CompactionDisabled_NilCompactor(t *testing.T) {
+	var proxiedMessageCount int
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		json.Unmarshal(body, &req)
+
+		if messages, ok := req["messages"].([]any); ok {
+			proxiedMessageCount = len(messages)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":      "msg_ok",
+			"type":    "message",
+			"role":    "assistant",
+			"content": []any{map[string]any{"type": "text", "text": "response"}},
+		})
+	})
+
+	handler, upstreamServer := newTestHandler(upstream, "test-api-key")
+	defer upstreamServer.Close()
+	// Compactor is nil by default → no compaction
+
+	proxyServer := httptest.NewServer(handler)
+	defer proxyServer.Close()
+
+	// Build a large request
+	messages := make([]map[string]any, 30)
+	for i := 0; i < 30; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		messages[i] = map[string]any{
+			"role":    role,
+			"content": "Message content here. xxxxxxxxxxxxxxxxxxxx",
+		}
+	}
+
+	reqBody, _ := json.Marshal(map[string]any{
+		"model":    "deepseek-v4-pro",
+		"messages": messages,
+	})
+
+	resp, err := http.Post(proxyServer.URL+"/v1/messages", "application/json", strings.NewReader(string(reqBody)))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// Without compaction, all 30 messages should be forwarded
+	assert.Equal(t, 30, proxiedMessageCount,
+		"all messages should pass through when compaction is disabled")
+}
+
+func TestHandler_CompactionFailure_GracefulDegradation(t *testing.T) {
+	var proxiedMessageCount int
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		json.Unmarshal(body, &req)
+
+		// If this is a summarization request, return an error
+		if _, isSummarization := req["system"]; isSummarization {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error":"summarization failed"}`))
+			return
+		}
+
+		// Record the proxied message count
+		if messages, ok := req["messages"].([]any); ok {
+			proxiedMessageCount = len(messages)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":      "msg_ok",
+			"type":    "message",
+			"role":    "assistant",
+			"content": []any{map[string]any{"type": "text", "text": "response"}},
+		})
+	})
+
+	handler, upstreamServer := newTestHandler(upstream, "test-api-key")
+	defer upstreamServer.Close()
+
+	// Wire in a compactor that will fail (summarization returns 500)
+	handler.Compactor = &compaction.Compactor{
+		Enabled:      true,
+		MaxTokens:    1,
+		MinMessages:  5,
+		SummaryModel: "haiku",
+		BaseURL:      upstreamServer.URL,
+		APIKey:       "test-api-key",
+		APIFormat:    "anthropic",
+		Client:       &http.Client{Timeout: 30 * time.Second},
+		Logger:       slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+
+	proxyServer := httptest.NewServer(handler)
+	defer proxyServer.Close()
+
+	// Build a large request
+	messages := make([]map[string]any, 30)
+	for i := 0; i < 30; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		messages[i] = map[string]any{
+			"role":    role,
+			"content": "Message content here. xxxxxxxxxxxxxxxxxxxx",
+		}
+	}
+
+	reqBody, _ := json.Marshal(map[string]any{
+		"model":    "deepseek-v4-pro",
+		"messages": messages,
+	})
+
+	resp, err := http.Post(proxyServer.URL+"/v1/messages", "application/json", strings.NewReader(string(reqBody)))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Request should still succeed despite compaction failure
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// When compaction fails, original body is used → all 30 messages forwarded
+	assert.Equal(t, 30, proxiedMessageCount,
+		"original messages should pass through when compaction fails gracefully")
 }

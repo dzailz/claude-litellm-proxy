@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"claude-go-to-deepseek-proxy/internal/backend"
+	"claude-go-to-deepseek-proxy/internal/compaction"
 	"claude-go-to-deepseek-proxy/internal/config"
 	"claude-go-to-deepseek-proxy/internal/logger"
 	"claude-go-to-deepseek-proxy/internal/proxy"
@@ -40,7 +41,10 @@ func main() {
 	// Create the appropriate backend based on config.BackendType.
 	// DeepSeek: native Anthropic-compatible API with API key auth.
 	// LiteLLM: OpenAI bridge that translates formats.
+	// We also capture the backend connection details for compaction setup.
 	var backendImpl backend.Backend
+	var compactionBaseURL, compactionAPIKey, compactionAPIFormat string
+
 	switch cfg.BackendType {
 	case config.BackendDeepSeek:
 		apiKey := cfg.DeepSeek.APIKey
@@ -64,6 +68,9 @@ func main() {
 			BaseURL: cfg.DeepSeek.BaseURL,
 			APIKey:  apiKey,
 		}
+		compactionBaseURL = cfg.DeepSeek.BaseURL
+		compactionAPIKey = apiKey
+		compactionAPIFormat = "anthropic"
 
 	case config.BackendLiteLLM:
 		apiKey := cfg.LiteLLM.APIKey
@@ -77,6 +84,9 @@ func main() {
 			APIKey:   apiKey,
 			ModelMap: cfg.LiteLLM.ModelMap,
 		}
+		compactionBaseURL = cfg.LiteLLM.BaseURL
+		compactionAPIKey = apiKey
+		compactionAPIFormat = "openai"
 
 	default:
 		fmt.Fprintf(os.Stderr, "fatal: unsupported backend type: %s\n", cfg.BackendType)
@@ -101,6 +111,33 @@ func main() {
 		Logger: log,
 	}
 
+	// Initialize conversation compactor if enabled. The compactor uses the
+	// same upstream proxy as the main request, but with a dedicated HTTP
+	// client and potentially a different (cheaper/faster) model for
+	// summarization. When disabled, Compactor remains nil and compaction
+	// is skipped entirely.
+	if cfg.Compaction.Enabled {
+		handler.Compactor = &compaction.Compactor{
+			Enabled:      true,
+			MaxTokens:    cfg.Compaction.MaxTokens,
+			SummaryModel: cfg.Compaction.SummaryModel,
+			MinMessages:  cfg.Compaction.MinMessages,
+			BaseURL:      compactionBaseURL,
+			APIKey:       compactionAPIKey,
+			APIFormat:    compactionAPIFormat,
+			Client: &http.Client{
+				Timeout: 90 * time.Second,
+			},
+			Logger: log,
+		}
+		log.Info("compaction enabled",
+			"max_tokens", cfg.Compaction.MaxTokens,
+			"summary_model", cfg.Compaction.SummaryModel,
+			"min_messages", cfg.Compaction.MinMessages,
+			"api_format", compactionAPIFormat,
+		)
+	}
+
 	// Router setup — unchanged from previous version.
 	r := chi.NewRouter()
 
@@ -122,6 +159,7 @@ func main() {
 		"log_level", cfg.LogLevel,
 		"log_format", cfg.LogFormat,
 		"connect_timeout", timeout.String(),
+		"compaction_enabled", cfg.Compaction.Enabled,
 	)
 
 	if err := http.ListenAndServe(cfg.ListenAddr, r); err != nil {

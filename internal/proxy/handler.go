@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"claude-go-to-deepseek-proxy/internal/backend"
+	"claude-go-to-deepseek-proxy/internal/compaction"
 )
 
 // ProxyHandler is the HTTP handler that receives Anthropic-format requests
@@ -21,6 +22,10 @@ type ProxyHandler struct {
 	Backend    backend.Backend
 	HTTPClient *http.Client
 	Logger     *slog.Logger
+	// Compactor performs transparent conversation compaction when the
+	// estimated token count exceeds the configured threshold. May be nil
+	// if compaction is disabled.
+	Compactor *compaction.Compactor
 }
 
 func generateRequestID() string {
@@ -50,6 +55,22 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.logError(reqID, r, 400, start, "invalid JSON body", err)
 		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
 		return
+	}
+
+	// Apply conversation compaction if enabled and the request exceeds
+	// the token threshold. Compaction summarizes older messages to fit
+	// within the upstream model's context window. On failure, we log
+	// the error and proceed with the original body (graceful degradation).
+	if h.Compactor != nil && h.Compactor.ShouldCompact(body) {
+		compacted, err := h.Compactor.Compact(r.Context(), body)
+		if err != nil {
+			h.Logger.Warn("compaction failed, using original body",
+				"request_id", reqID,
+				"error", err,
+			)
+		} else {
+			body = compacted
+		}
 	}
 
 	// Delegate request preparation to the backend. The backend handles
