@@ -939,7 +939,7 @@ func TestSummarize_FallbackToDefaultWhenNoModel(t *testing.T) {
 
 	_, err := c.summarize(context.Background(), body, oldMessages)
 	require.NoError(t, err)
-	assert.Equal(t, "glm5.1", receivedModel)
+	assert.Equal(t, "haiku", receivedModel)
 }
 
 func TestSummarize_HTTPError(t *testing.T) {
@@ -952,6 +952,249 @@ func TestSummarize_HTTPError(t *testing.T) {
 	_, err := c.summarize(context.Background(), body, oldMessages)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "status 503")
+}
+
+// --- summarizeAnthropic Tests ---
+
+func TestSummarizeAnthropic_Success(t *testing.T) {
+	var receivedURL string
+	var receivedModel string
+	var receivedSystem string
+	var receivedAuthHeader string
+	var receivedVersionHeader string
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedURL = r.URL.Path
+		receivedAuthHeader = r.Header.Get("x-api-key")
+		receivedVersionHeader = r.Header.Get("anthropic-version")
+
+		var req map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+
+		receivedModel = req["model"].(string)
+		receivedSystem = req["system"].(string)
+		messages := req["messages"].([]any)
+		require.Len(t, messages, 1)
+		userMsg := messages[0].(map[string]any)
+		assert.Equal(t, "user", userMsg["role"])
+		assert.Equal(t, false, req["stream"])
+		assert.Equal(t, float64(4096), req["max_tokens"])
+
+		// Respond in Anthropic Messages API format
+		resp := map[string]any{
+			"id":   "msg_summary_123",
+			"type": "message",
+			"role":  "assistant",
+			"content": []any{
+				map[string]any{
+					"type": "text",
+					"text": "Anthropic summary of the conversation.",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	c, server := newTestCompactor(upstream)
+	defer server.Close()
+	c.APIFormat = "anthropic"
+
+	oldMessages := []any{
+		map[string]any{"role": "user", "content": "old message 1"},
+		map[string]any{"role": "assistant", "content": "old response 1"},
+	}
+
+	body := map[string]any{"model": "sonnet"}
+	summary, err := c.summarize(context.Background(), body, oldMessages)
+
+	require.NoError(t, err)
+	assert.Equal(t, "Anthropic summary of the conversation.", summary)
+	assert.Equal(t, "/v1/messages", receivedURL)
+	assert.Equal(t, "test-key", receivedAuthHeader)
+	assert.Equal(t, "2023-06-01", receivedVersionHeader)
+	assert.Equal(t, "test-model", receivedModel)
+	assert.Contains(t, receivedSystem, "conversation summarizer")
+}
+
+func TestSummarizeAnthropic_HTTPError(t *testing.T) {
+	c, server := newTestCompactor(errorHandler(http.StatusServiceUnavailable))
+	defer server.Close()
+	c.APIFormat = "anthropic"
+
+	oldMessages := []any{map[string]any{"role": "user", "content": "test"}}
+	body := map[string]any{"model": "sonnet"}
+
+	_, err := c.summarize(context.Background(), body, oldMessages)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "status 503")
+}
+
+func TestSummarizeAnthropic_EmptyContentBlocks(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"id":      "msg_summary_empty",
+			"type":    "message",
+			"role":    "assistant",
+			"content": []any{}, // empty content blocks
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	c, server := newTestCompactor(upstream)
+	defer server.Close()
+	c.APIFormat = "anthropic"
+
+	oldMessages := []any{map[string]any{"role": "user", "content": "test"}}
+	body := map[string]any{"model": "sonnet"}
+
+	_, err := c.summarize(context.Background(), body, oldMessages)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no content blocks")
+}
+
+func TestSummarizeAnthropic_EmptyTextInBlock(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"id":   "msg_summary_empty_text",
+			"type": "message",
+			"role":  "assistant",
+			"content": []any{
+				map[string]any{
+					"type": "text",
+					"text": "", // empty text
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	c, server := newTestCompactor(upstream)
+	defer server.Close()
+	c.APIFormat = "anthropic"
+
+	oldMessages := []any{map[string]any{"role": "user", "content": "test"}}
+	body := map[string]any{"model": "sonnet"}
+
+	_, err := c.summarize(context.Background(), body, oldMessages)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty text")
+}
+
+func TestSummarizeAnthropic_ModelResolution(t *testing.T) {
+	var receivedModel string
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		json.NewDecoder(r.Body).Decode(&req)
+		receivedModel = req["model"].(string)
+
+		resp := map[string]any{
+			"content": []any{
+				map[string]any{"type": "text", "text": "ok"},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	c, server := newTestCompactor(upstream)
+	defer server.Close()
+	c.APIFormat = "anthropic"
+	c.SummaryModel = "deepseek-v4-flash"
+
+	oldMessages := []any{map[string]any{"role": "user", "content": "test"}}
+	body := map[string]any{"model": "sonnet"}
+
+	_, err := c.summarize(context.Background(), body, oldMessages)
+	require.NoError(t, err)
+	assert.Equal(t, "deepseek-v4-flash", receivedModel,
+		"explicit SummaryModel should take priority over body model")
+}
+
+func TestSummarizeAnthropic_BadJSONResponse(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`not valid json`))
+	})
+
+	c, server := newTestCompactor(upstream)
+	defer server.Close()
+	c.APIFormat = "anthropic"
+
+	oldMessages := []any{map[string]any{"role": "user", "content": "test"}}
+	body := map[string]any{"model": "sonnet"}
+
+	_, err := c.summarize(context.Background(), body, oldMessages)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to parse")
+}
+
+// --- summarize dispatch Tests ---
+
+func TestSummarize_DispatchesToAnthropic(t *testing.T) {
+	var receivedURL string
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedURL = r.URL.Path
+		resp := map[string]any{
+			"content": []any{
+				map[string]any{"type": "text", "text": "summary"},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	c, server := newTestCompactor(upstream)
+	defer server.Close()
+	c.APIFormat = "anthropic"
+
+	oldMessages := []any{map[string]any{"role": "user", "content": "test"}}
+	body := map[string]any{"model": "sonnet"}
+
+	_, err := c.summarize(context.Background(), body, oldMessages)
+	require.NoError(t, err)
+	assert.Equal(t, "/v1/messages", receivedURL,
+		"anthropic APIFormat should send to /v1/messages")
+}
+
+func TestSummarize_DispatchesToOpenAI_ByDefault(t *testing.T) {
+	var receivedURL string
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedURL = r.URL.Path
+		resp := map[string]any{
+			"choices": []any{
+				map[string]any{
+					"message": map[string]any{"role": "assistant", "content": "summary"},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	c, server := newTestCompactor(upstream)
+	defer server.Close()
+	// APIFormat is empty by default → should use OpenAI
+
+	oldMessages := []any{map[string]any{"role": "user", "content": "test"}}
+	body := map[string]any{"model": "sonnet"}
+
+	_, err := c.summarize(context.Background(), body, oldMessages)
+	require.NoError(t, err)
+	assert.Equal(t, "/chat/completions", receivedURL,
+		"default APIFormat should send to /chat/completions")
 }
 
 // --- messageCount Tests ---

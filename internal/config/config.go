@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -49,6 +50,28 @@ type LiteLLMBackendConfig struct {
 	ModelMap map[string]string `yaml:"model_map"`
 }
 
+// CompactionConfig holds configuration for automatic conversation compaction.
+// When enabled, the proxy transparently summarizes older messages when the
+// estimated token count exceeds MaxTokens, keeping the conversation within
+// the upstream model's context window.
+type CompactionConfig struct {
+	// Enabled controls whether compaction is active.
+	Enabled bool `yaml:"enabled"`
+	// MaxTokens is the token threshold above which compaction triggers.
+	// Default: 51200 (80% of a 64k context window).
+	MaxTokens int `yaml:"max_tokens"`
+	// SummaryModel is the model identifier used for summarization requests.
+	// If empty, the request's own model is used as fallback.
+	// For LiteLLM: use a model_map key like "haiku" to route through
+	// a fast/cheap model. For DeepSeek: use e.g. "deepseek-v4-flash".
+	SummaryModel string `yaml:"summary_model"`
+	// MinMessages is the minimum number of messages required before
+	// compaction is considered. Small conversations that exceed the
+	// token limit are likely caused by large individual messages
+	// (images, documents) that compaction cannot help with.
+	MinMessages int `yaml:"min_messages"`
+}
+
 // Config holds the full application configuration with flattened fields
 // for common settings and nested structs for backend-specific options.
 type Config struct {
@@ -67,6 +90,8 @@ type Config struct {
 	DeepSeek DeepSeekBackendConfig
 	// LiteLLM holds LiteLLM-specific configuration.
 	LiteLLM LiteLLMBackendConfig
+	// Compaction holds conversation compaction configuration.
+	Compaction CompactionConfig
 }
 
 // fileConfig mirrors the YAML config file structure for deserialization.
@@ -84,6 +109,7 @@ type fileConfig struct {
 	} `yaml:"logging"`
 	DeepSeek DeepSeekBackendConfig `yaml:"deepseek"`
 	LiteLLM  LiteLLMBackendConfig  `yaml:"litellm"`
+	Compaction CompactionConfig    `yaml:"compaction"`
 }
 
 // envVarRe matches ${VAR_NAME} patterns in config values.
@@ -102,6 +128,14 @@ var envVarRe = regexp.MustCompile(`\$\{([^}]+)\}`)
 func LoadConfig(path string) (*Config, error) {
 	if path == "" {
 		path = os.Getenv("CONFIG_FILE")
+	}
+
+	// Auto-detect config.yaml in the working directory when no explicit
+	// path or CONFIG_FILE env var is provided.
+	if path == "" {
+		if _, err := os.Stat("config.yaml"); err == nil {
+			path = "config.yaml"
+		}
 	}
 
 	cfg := defaultConfig()
@@ -139,6 +173,12 @@ func defaultConfig() *Config {
 		},
 		LiteLLM: LiteLLMBackendConfig{
 			BaseURL: "http://localhost:4000",
+		},
+		Compaction: CompactionConfig{
+			Enabled:      false,
+			MaxTokens:    51200,
+			MinMessages:  5,
+			SummaryModel: "",
 		},
 	}
 }
@@ -210,6 +250,20 @@ func fileConfigToConfig(fc *fileConfig) *Config {
 		cfg.LiteLLM.ModelMap = fc.LiteLLM.ModelMap
 	}
 
+	// Compaction settings
+	if fc.Compaction.Enabled {
+		cfg.Compaction.Enabled = fc.Compaction.Enabled
+	}
+	if fc.Compaction.MaxTokens > 0 {
+		cfg.Compaction.MaxTokens = fc.Compaction.MaxTokens
+	}
+	if fc.Compaction.SummaryModel != "" {
+		cfg.Compaction.SummaryModel = fc.Compaction.SummaryModel
+	}
+	if fc.Compaction.MinMessages > 0 {
+		cfg.Compaction.MinMessages = fc.Compaction.MinMessages
+	}
+
 	return cfg
 }
 
@@ -248,6 +302,24 @@ func applyEnvOverrides(cfg *Config) *Config {
 	}
 	if v := os.Getenv("LITELLM_BASE_URL"); v != "" {
 		cfg.LiteLLM.BaseURL = v
+	}
+
+	// Compaction settings
+	if v := os.Getenv("COMPACTION_ENABLED"); v != "" {
+		cfg.Compaction.Enabled = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v := os.Getenv("COMPACTION_MAX_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Compaction.MaxTokens = n
+		}
+	}
+	if v := os.Getenv("COMPACTION_SUMMARY_MODEL"); v != "" {
+		cfg.Compaction.SummaryModel = v
+	}
+	if v := os.Getenv("COMPACTION_MIN_MESSAGES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Compaction.MinMessages = n
+		}
 	}
 
 	// Resolve api_key_file to api_key when a file path is set but

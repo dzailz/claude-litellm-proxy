@@ -55,6 +55,102 @@ func TestLoadConfig_NoConfigFile_ReturnsDefaultsNoError(t *testing.T) {
 	assert.Equal(t, "json", cfg.LogFormat)
 }
 
+// --- LoadConfig tests: auto-detection of config.yaml ---
+
+func TestLoadConfig_AutoDetect_ConfigYAMLInWorkingDir(t *testing.T) {
+	// When config.yaml exists in the working directory and no path or
+	// CONFIG_FILE is provided, it should be auto-detected and loaded.
+	os.Unsetenv("CONFIG_FILE")
+
+	// Create a temp directory, write config.yaml there, and chdir into it.
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	tmpDir := t.TempDir()
+	err = os.Chdir(tmpDir)
+	require.NoError(t, err)
+	defer os.Chdir(origDir) // restore working directory after test
+
+	yamlContent := `
+backend:
+  type: litellm
+server:
+  listen_addr: "0.0.0.0:7070"
+logging:
+  level: debug
+`
+	err = os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(yamlContent), 0644)
+	require.NoError(t, err)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Equal(t, BackendLiteLLM, cfg.BackendType,
+		"config.yaml in working dir should be auto-detected")
+	assert.Equal(t, "0.0.0.0:7070", cfg.ListenAddr)
+	assert.Equal(t, "debug", cfg.LogLevel)
+}
+
+func TestLoadConfig_AutoDetect_NoConfigYAML_ReturnsDefaults(t *testing.T) {
+	// When no config.yaml exists in the working directory and no path or
+	// CONFIG_FILE is provided, defaults should be returned.
+	os.Unsetenv("CONFIG_FILE")
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	tmpDir := t.TempDir()
+	err = os.Chdir(tmpDir)
+	require.NoError(t, err)
+	defer os.Chdir(origDir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Equal(t, BackendDeepSeek, cfg.BackendType,
+		"no config.yaml should return default DeepSeek backend")
+}
+
+func TestLoadConfig_AutoDetect_ConfigFileEnvVarTakesPrecedence(t *testing.T) {
+	// CONFIG_FILE env var should take precedence over auto-detected config.yaml.
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	tmpDir := t.TempDir()
+	err = os.Chdir(tmpDir)
+	require.NoError(t, err)
+	defer os.Chdir(origDir)
+
+	// Write auto-detected config.yaml (litellm)
+	autoContent := `
+backend:
+  type: litellm
+`
+	err = os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(autoContent), 0644)
+	require.NoError(t, err)
+
+	// Write explicit config file (deepseek) pointed to by CONFIG_FILE
+	explicitContent := `
+backend:
+  type: deepseek
+server:
+  listen_addr: "1.2.3.4:9999"
+`
+	explicitPath := filepath.Join(tmpDir, "explicit.yaml")
+	err = os.WriteFile(explicitPath, []byte(explicitContent), 0644)
+	require.NoError(t, err)
+
+	os.Setenv("CONFIG_FILE", explicitPath)
+	defer os.Unsetenv("CONFIG_FILE")
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Equal(t, BackendDeepSeek, cfg.BackendType,
+		"CONFIG_FILE env var should take precedence over auto-detected config.yaml")
+	assert.Equal(t, "1.2.3.4:9999", cfg.ListenAddr)
+}
+
 // --- LoadConfig tests: CONFIG_FILE env var ---
 
 func TestLoadConfig_CONFIG_FILE_EnvVar_PointsToValidYAML(t *testing.T) {

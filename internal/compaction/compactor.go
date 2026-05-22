@@ -25,11 +25,13 @@ type Compactor struct {
 	Enabled bool
 
 	// MaxTokens is the token threshold above which compaction triggers.
-	// Default: 80000 (80% of a 100k context window).
+	// Default: 51200 (80% of a 64k context window).
 	MaxTokens int
 
 	// SummaryModel is the model identifier used for summarization requests.
-	// If empty, the request's own model is used.
+	// If empty, the request's own model is used as fallback.
+	// For LiteLLM: use a model_map key like "haiku" to route through
+	// a fast/cheap model. For DeepSeek: use e.g. "deepseek-v4-flash".
 	SummaryModel string
 
 	// MinMessages is the minimum number of messages required before compaction
@@ -38,12 +40,16 @@ type Compactor struct {
 	// compaction cannot help with.
 	MinMessages int
 
-	// BaseURL is the upstream proxy endpoint for summarization requests
-	// (OpenAI chat/completions format).
+	// BaseURL is the upstream proxy endpoint for summarization requests.
 	BaseURL string
 
 	// APIKey is the authentication key for the upstream proxy.
 	APIKey string
+
+	// APIFormat controls the format of summarization requests.
+	// "openai" sends to /chat/completions (for LiteLLM).
+	// "anthropic" sends to /v1/messages (for DeepSeek native API).
+	APIFormat string
 
 	// Client is the HTTP client used for summarization requests.
 	Client *http.Client
@@ -362,9 +368,33 @@ func stripMediaFromBlocks(blocks []any) []any {
 }
 
 // summarize calls the summarization model with the old messages and returns
-// the summary text. It uses the OpenAI chat/completions format, targeting
-// the same upstream proxy that the main request would go to.
+// the summary text. It dispatches to the appropriate API format based on
+// c.APIFormat: "openai" targets /chat/completions (LiteLLM), "anthropic"
+// targets /v1/messages (DeepSeek native API).
 func (c *Compactor) summarize(ctx context.Context, body map[string]any, oldMessages []any) (string, error) {
+	switch c.APIFormat {
+	case "anthropic":
+		return c.summarizeAnthropic(ctx, body, oldMessages)
+	default:
+		return c.summarizeOpenAI(ctx, body, oldMessages)
+	}
+}
+
+// resolveSummaryModel determines the model to use for summarization.
+// Priority: explicit SummaryModel > request's own model > "haiku" (sensible default).
+func (c *Compactor) resolveSummaryModel(body map[string]any) string {
+	if c.SummaryModel != "" {
+		return c.SummaryModel
+	}
+	if m, ok := body["model"].(string); ok && m != "" {
+		return m
+	}
+	return "haiku"
+}
+
+// summarizeOpenAI calls the summarization model using the OpenAI
+// chat/completions format, targeting the same upstream proxy (LiteLLM).
+func (c *Compactor) summarizeOpenAI(ctx context.Context, body map[string]any, oldMessages []any) (string, error) {
 	// Build OpenAI-format messages for the summarization request
 	chatMessages := make([]map[string]any, 0, 2+len(oldMessages))
 
@@ -387,15 +417,7 @@ func (c *Compactor) summarize(ctx context.Context, body map[string]any, oldMessa
 	})
 
 	// Determine the model to use for summarization
-	model := c.SummaryModel
-	if model == "" {
-		// Use the same model as the original request
-		if m, ok := body["model"].(string); ok {
-			model = m
-		} else {
-			model = "glm5.1"
-		}
-	}
+	model := c.resolveSummaryModel(body)
 
 	// Build the OpenAI chat completion request
 	reqBody := map[string]any{
@@ -466,6 +488,100 @@ func (c *Compactor) summarize(ctx context.Context, body map[string]any, oldMessa
 	}
 
 	return content, nil
+}
+
+// summarizeAnthropic calls the summarization model using the Anthropic
+// Messages API format (/v1/messages), targeting the DeepSeek native API
+// or any Anthropic-compatible endpoint.
+func (c *Compactor) summarizeAnthropic(ctx context.Context, body map[string]any, oldMessages []any) (string, error) {
+	// Build Anthropic-format messages for the summarization request.
+	// We convert old messages into a single user message containing the
+	// conversation JSON, with the summarization prompt as the system prompt.
+	conversationJSON, err := json.MarshalIndent(oldMessages, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal old messages: %w", err)
+	}
+
+	chatMessages := []map[string]any{
+		{
+			"role": "user",
+			"content": []any{
+				map[string]any{
+					"type": "text",
+					"text": UserSummaryPrompt + string(conversationJSON),
+				},
+			},
+		},
+	}
+
+	model := c.resolveSummaryModel(body)
+
+	// Build the Anthropic Messages API request
+	reqBody := map[string]any{
+		"model":      model,
+		"system":     SummaryPrompt,
+		"messages":   chatMessages,
+		"max_tokens": 4096,
+		"stream":     false,
+	}
+
+	reqBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal summarization request: %w", err)
+	}
+
+	url := strings.TrimRight(c.BaseURL, "/") + "/v1/messages"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBytes))
+	if err != nil {
+		return "", fmt.Errorf("failed to create summarization request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.APIKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	// Use a timeout for summarization to avoid blocking the main request too long
+	summarizeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	req = req.WithContext(summarizeCtx)
+
+	resp, err := c.Client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("summarization request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read summarization response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("summarization returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	// Parse Anthropic Messages API response
+	var apiResp map[string]any
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return "", fmt.Errorf("failed to parse summarization response: %w", err)
+	}
+
+	contentRaw, ok := apiResp["content"].([]any)
+	if !ok || len(contentRaw) == 0 {
+		return "", fmt.Errorf("summarization response has no content blocks")
+	}
+
+	firstBlock, ok := contentRaw[0].(map[string]any)
+	if !ok {
+		return "", fmt.Errorf("invalid content block format in summarization response")
+	}
+
+	text, ok := firstBlock["text"].(string)
+	if !ok || text == "" {
+		return "", fmt.Errorf("empty text in summarization response")
+	}
+
+	return text, nil
 }
 
 // buildCompactedMessages constructs the compacted messages array by inserting
